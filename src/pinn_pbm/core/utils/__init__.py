@@ -7,7 +7,13 @@ Includes:
 - helper_functions: General-purpose utilities
 """
 
-# Will export utilities as they are implemented
-# from .result_manager import ResultManager  # Step 2
-# from .config_loader import load_config     # Step 3
-# from .helper_functions import trapz_tf     # Step 4
+# Result management (Step 2 - Complete)
+from .result_manager import ResultManager
+
+# Config loader (Step 3 - To be implemented)
+# from .config_loader import load_config
+
+# Helper functions (Step 4 - To be implemented)
+# from .helper_functions import trapz_tf
+
+__all__ = ['ResultManager']
