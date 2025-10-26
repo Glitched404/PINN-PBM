@@ -1,9 +1,4 @@
 """
-Base model classes for PINN-PBM.
-
-This module contains the BasePINN class that all problem-specific
-PINNs inherit from.
-"""
 Base PINN models and architectures.
 
 Includes:
