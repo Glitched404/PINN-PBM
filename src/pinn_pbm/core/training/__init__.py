@@ -2,12 +2,36 @@
 Training utilities for PINN-PBM.
 
 Includes:
-- optimizers: ADAM, L-BFGS (scipy and TensorFlow Probability)
+- optimizers: L-BFGS (scipy and TensorFlow Probability)
 - schedulers: Learning rate schedules, loss weight schedules
-- loss_functions: Huber loss, percentile-clip loss, etc.
+Note: Loss functions are in core.utils.helper_functions
 """
 
-# Will export training utilities once implemented in Step 5
-# from .optimizers import lbfgs_optimizer_scipy, lbfgs_optimizer_tfp
-# from .schedulers import WarmupSchedule, get_dynamic_loss_weight
-# from .loss_functions import huber_loss, percentile_clip_loss
+# Optimizers (Step 5 - Complete)
+from .optimizers import (
+    lbfgs_optimizer_scipy,
+    lbfgs_optimizer_tfp,
+    check_tfp_availability,
+    TFP_AVAILABLE
+)
+
+# Schedulers (Step 5 - Complete)
+from .schedulers import (
+    get_dynamic_loss_weight,
+    get_custom_dynamic_loss_weight,
+    WarmupSchedule,
+    create_warmup_cosine_schedule,
+    create_warmup_exponential_schedule
+)
+
+__all__ = [
+    'lbfgs_optimizer_scipy',
+    'lbfgs_optimizer_tfp',
+    'check_tfp_availability',
+    'TFP_AVAILABLE',
+    'get_dynamic_loss_weight',
+    'get_custom_dynamic_loss_weight',
+    'WarmupSchedule',
+    'create_warmup_cosine_schedule',
+    'create_warmup_exponential_schedule'
+]
