@@ -1,11 +1,29 @@
 """
-Physics kernels and equations for breakage problems.
+Physics kernels for breakage problems.
 
 Includes:
-- kernels: Selection and breakage distribution functions
-- equations: PDE residual computations
+- Selection functions: S(v) for different cases
+- Breakage distributions: β(v,v')
+- PDE residual computations
 """
 
-# Will export physics functions once implemented in Step 7
-# from .kernels import selection_function, breakage_distribution
-# from .equations import compute_pde_residual
+# Physics kernels (Step 7 - Complete)
+from .kernels import (
+    selection_linear,
+    selection_quadratic,
+    breakage_symmetric,
+    get_selection_function,
+    get_breakage_distribution,
+    validate_selection_function,
+    validate_breakage_distribution
+)
+
+__all__ = [
+    'selection_linear',
+    'selection_quadratic',
+    'breakage_symmetric',
+    'get_selection_function',
+    'get_breakage_distribution',
+    'validate_selection_function',
+    'validate_breakage_distribution'
+]
