@@ -1,0 +1,88 @@
+# Configuration for Case 1: Linear Selection Function
+# Breakage PBE with S(v) = v and β(v,v') = 2/v'
+
+problem_type: breakage
+case_name: case1_linear
+
+# Domain specification
+domain:
+  v_min: 0.001          # Minimum volume
+  v_max: 10.0           # Maximum volume
+  t_min: 0.0            # Initial time
+  t_max: 10.0           # Final time
+  n_v: 500              # Number of volume grid points
+  n_t: 100              # Number of time grid points
+
+# Time slices for training and plotting
+time_slices:
+  - 0.0
+  - 2.0
+  - 5.0
+  - 10.0
+
+# Network architecture
+network:
+  n_hidden_layers: 8
+  n_neurons: 128
+  activation: tanh
+  use_residual: true
+  residual_freq: 2      # Residual connection every 2 layers
+  weight_regularization: 1.0e-6
+
+# Training configuration
+training:
+  epochs: 3000
+  initial_learning_rate: 5.0e-4
+  data_batch_size: 1024
+  phys_batch_size: 2048
+  phys_loss_weight: 0.01
+  loss_schedule: dynamic      # Options: fixed, dynamic, custom
+  loss_scaling: adaptive_huber  # Options: original, huber, adaptive_epsilon, adaptive_huber, percentile
+  use_warmup: true
+  warmup_steps: 500
+  use_cosine_decay: true
+  min_lr_fraction: 0.01       # Minimum LR as fraction of initial
+  gradient_clip_norm: 1.0
+
+# L-BFGS fine-tuning
+lbfgs:
+  enabled: true
+  max_iter: 2500
+  n_colloc: 2048
+  optimizer: tfp          # Options: tfp (TensorFlow Probability), scipy
+
+# Residual Adaptive Refinement (RAR)
+rar:
+  enabled: true
+  refinement_interval: 5000
+  n_candidates: 200000    # v_grid (1000) x t_grid (200)
+  batch_size: 8192
+
+# Initial condition enforcement
+initial_condition:
+  enforce_every_epoch: true
+  batch_size: 512
+
+# Output configuration
+output:
+  save_results: true
+  save_plots: true
+  save_model: true
+  save_predictions: true
+  save_loss_history: true
+  plot_format: png
+  plot_dpi: 300
+
+# Plotting configuration
+plotting:
+  y_limits:
+    - 0.1
+    - 150
+  markers:
+    - o
+    - s
+    - '^'
+    - d
+  marker_frequency: 20    # Plot every Nth point
+  show_grid: true
+  legend_location: best
