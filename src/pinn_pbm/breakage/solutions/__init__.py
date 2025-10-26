@@ -8,7 +8,21 @@ Provides exact solutions for validation:
 - Case 4: Quadratic selection with delta peak
 """
 
-# Will export analytical solutions once implemented in Step 6
-# from .analytical import analytic_f_case1, analytic_f_case2
-# from .analytical import analytic_f_case3, analytic_f_case4
-# from .analytical import get_analytical_solution
+# Analytical solutions (Step 6 - Complete)
+from .analytical import (
+    analytic_f_case1,
+    analytic_f_case2,
+    analytic_f_case3,
+    analytic_f_case4,
+    get_analytical_solution,
+    validate_analytical_solution
+)
+
+__all__ = [
+    'analytic_f_case1',
+    'analytic_f_case2',
+    'analytic_f_case3',
+    'analytic_f_case4',
+    'get_analytical_solution',
+    'validate_analytical_solution'
+]
