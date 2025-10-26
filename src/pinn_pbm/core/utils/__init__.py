@@ -24,8 +24,18 @@ from .config_loader import (
     ConfigurationError
 )
 
-# Helper functions (Step 4 - To be implemented)
-# from .helper_functions import trapz_tf
+# Helper functions (Step 4 - Complete)
+from .helper_functions import (
+    trapz_tf,
+    tail_trapz,
+    huber_loss,
+    percentile_clip_loss,
+    delta_peak,
+    set_random_seed,
+    configure_gpu_memory_growth,
+    check_tensorflow_probability,
+    TFP_AVAILABLE
+)
 
 __all__ = [
     'ResultManager',
@@ -38,5 +48,14 @@ __all__ = [
     'load_breakage_config',
     'get_default_breakage_config',
     'validate_breakage_config',
-    'ConfigurationError'
+    'ConfigurationError',
+    'trapz_tf',
+    'tail_trapz',
+    'huber_loss',
+    'percentile_clip_loss',
+    'delta_peak',
+    'set_random_seed',
+    'configure_gpu_memory_growth',
+    'check_tensorflow_probability',
+    'TFP_AVAILABLE'
 ]
