@@ -55,7 +55,7 @@ pip install -e .
 
 ### Google Colab Installation
 
-Colab currently ships with Python 3.11. Use the pinned TensorFlow 2.17 stack:
+Colab currently ships with Python 3.12. Use the TensorFlow 2.19 stack provided in `requirements-colab.txt`:
 
 ```python
 %pip install -q -r requirements-colab.txt
