@@ -230,83 +230,82 @@ class BreakagePINN(BasePINN):
 
         v_grid = self.v_grid_tf
         total_points = tf.shape(v_colloc)[0]
+        batch_size = tf.maximum(tf.minimum(total_points, tf.constant(1000, dtype=tf.int32)), 1)
 
-        # Handle edge case with no collocation points
-        if tf.equal(total_points, 0):
+        def _empty_result() -> Tuple[tf.Tensor, tf.Tensor]:
             empty = tf.zeros((0,), dtype=tf.float32)
             return empty, empty
 
-        batch_size = tf.minimum(total_points, 1000)
-        batch_size = tf.maximum(batch_size, 1)
-
-        n_batches = tf.cast(
-            tf.math.ceil(
-                tf.cast(total_points, tf.float32)
-                / tf.cast(batch_size, tf.float32)
-            ),
-            tf.int32,
-        )
-
-        residuals_ta = tf.TensorArray(tf.float32, size=n_batches)
-        f_ta = tf.TensorArray(tf.float32, size=n_batches)
-
-        def body(i, res_arr, f_arr):
-            start_idx = i * batch_size
-            end_idx = tf.minimum(start_idx + batch_size, total_points)
-
-            v_batch = v_colloc[start_idx:end_idx]
-            t_batch = t_colloc[start_idx:end_idx]
-
-            with tf.GradientTape() as tape:
-                tape.watch(t_batch)
-                f_batch = self.net_f(v_batch, t_batch)
-            df_dt = tape.gradient(f_batch, t_batch)
-            df_dt = tf.where(tf.math.is_finite(df_dt), df_dt, tf.zeros_like(df_dt))
-
-            death = self.selection_fn(v_batch) * f_batch
-
-            B = tf.shape(v_batch)[0]
-            N = tf.shape(v_grid)[0]
-
-            t_grid = tf.tile(tf.expand_dims(t_batch, 1), [1, N])
-            v_grid_batch = tf.tile(tf.expand_dims(v_grid, 0), [B, 1])
-
-            f_grid = self.net_f(
-                tf.reshape(v_grid_batch, [-1]),
-                tf.reshape(t_grid, [-1])
+        def _compute() -> Tuple[tf.Tensor, tf.Tensor]:
+            n_batches = tf.cast(
+                tf.math.ceil(
+                    tf.cast(total_points, tf.float32)
+                    / tf.cast(batch_size, tf.float32)
+                ),
+                tf.int32,
             )
-            f_grid = tf.reshape(f_grid, [B, N])
 
-            s_grid = self.selection_fn(v_grid)
-            g_grid = f_grid * (2.0 / v_grid) * s_grid
-            tail_integrals = tail_trapz(g_grid, v_grid)
+            residuals_ta = tf.TensorArray(tf.float32, size=n_batches)
+            f_ta = tf.TensorArray(tf.float32, size=n_batches)
 
-            idx = tf.searchsorted(v_grid, v_batch, side='right')
-            idx = tf.minimum(idx, N - 1)
-            batch_ids = tf.range(B, dtype=idx.dtype)
-            birth = tf.gather_nd(tail_integrals, tf.stack([batch_ids, idx], axis=1))
+            def body(i, res_arr, f_arr):
+                start_idx = i * batch_size
+                end_idx = tf.minimum(start_idx + batch_size, total_points)
 
-            residual = df_dt - (birth - death)
-            residual = tf.where(tf.math.is_finite(residual), residual, tf.zeros_like(residual))
+                v_batch = v_colloc[start_idx:end_idx]
+                t_batch = t_colloc[start_idx:end_idx]
 
-            res_arr = res_arr.write(i, residual)
-            f_arr = f_arr.write(i, f_batch)
-            return i + 1, res_arr, f_arr
+                with tf.GradientTape() as tape:
+                    tape.watch(t_batch)
+                    f_batch = self.net_f(v_batch, t_batch)
+                df_dt = tape.gradient(f_batch, t_batch)
+                df_dt = tf.where(tf.math.is_finite(df_dt), df_dt, tf.zeros_like(df_dt))
 
-        def cond(i, *_):
-            return i < n_batches
+                death = self.selection_fn(v_batch) * f_batch
 
-        _, residuals_ta, f_ta = tf.while_loop(
-            cond,
-            body,
-            loop_vars=(tf.constant(0, tf.int32), residuals_ta, f_ta),
-            parallel_iterations=1,
-        )
+                B = tf.shape(v_batch)[0]
+                N = tf.shape(v_grid)[0]
 
-        residuals = residuals_ta.concat()
-        f_pred = f_ta.concat()
+                t_grid = tf.tile(tf.expand_dims(t_batch, 1), [1, N])
+                v_grid_batch = tf.tile(tf.expand_dims(v_grid, 0), [B, 1])
 
-        return residuals, f_pred
+                f_grid = self.net_f(
+                    tf.reshape(v_grid_batch, [-1]),
+                    tf.reshape(t_grid, [-1])
+                )
+                f_grid = tf.reshape(f_grid, [B, N])
+
+                s_grid = self.selection_fn(v_grid)
+                g_grid = f_grid * (2.0 / v_grid) * s_grid
+                tail_integrals = tail_trapz(g_grid, v_grid)
+
+                idx = tf.searchsorted(v_grid, v_batch, side='right')
+                idx = tf.minimum(idx, N - 1)
+                batch_ids = tf.range(B, dtype=idx.dtype)
+                birth = tf.gather_nd(tail_integrals, tf.stack([batch_ids, idx], axis=1))
+
+                residual = df_dt - (birth - death)
+                residual = tf.where(tf.math.is_finite(residual), residual, tf.zeros_like(residual))
+
+                res_arr = res_arr.write(i, residual)
+                f_arr = f_arr.write(i, f_batch)
+                return i + 1, res_arr, f_arr
+
+            def cond(i, *_):
+                return i < n_batches
+
+            _, residuals_ta, f_ta = tf.while_loop(
+                cond,
+                body,
+                loop_vars=(tf.constant(0, tf.int32), residuals_ta, f_ta),
+                parallel_iterations=1,
+            )
+
+            residuals = residuals_ta.concat()
+            f_pred = f_ta.concat()
+            return residuals, f_pred
+
+        return tf.cond(tf.equal(total_points, 0), _empty_result, _compute)
 
     def compute_physics_loss(
         self,
