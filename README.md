@@ -53,6 +53,30 @@ pip install -e .[dev]
 pip install -e .
 ```
 
+### Google Colab Installation
+
+Colab currently ships with Python 3.11. Use the pinned TensorFlow 2.17 stack:
+
+```python
+%pip install -q -r requirements-colab.txt
+
+import numpy as np
+import tensorflow as tf
+import tensorflow_probability as tfp
+
+print("numpy:", np.__version__)
+print("tensorflow:", tf.__version__)
+print("tensorflow_probability:", tfp.__version__)
+
+%pip check
+```
+
+Alternatively install the package directly with the Colab extra:
+
+```bash
+pip install -e .[colab]
+```
+
 ## Quick Start
 
 ### Run Individual Cases
