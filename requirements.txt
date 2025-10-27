@@ -1,20 +1,19 @@
-# Core dependencies
-tensorflow==2.15.0
-tensorflow-probability==0.20.1
-numpy>=1.23.5,<2.0.0
-scipy>=1.10.0,<2.0.0
-matplotlib>=3.7.0,<4.0.0
-typing-extensions>=4.2.0,<5.0.0
+# Core dependencies (Python 3.11 compatible)
+tensorflow==2.17.0
+tensorflow-probability==0.25.0
+numpy==1.26.4
+scipy==1.12.0
+matplotlib==3.8.2
+typing-extensions>=4.7.0,<5.0.0
 
 # Utilities
-tqdm>=4.65.0,<5.0.0
+tqdm>=4.66.0,<5.0.0
 PyYAML>=6.0.0,<7.0.0
 
 # Testing
-pytest>=7.0.0,<8.0.0
-pytest-cov>=3.0.0,<4.0.0
+pytest>=7.0.0,<9.0.0
+pytest-cov>=4.0.0,<5.0.0
 
-# Jupyter
-ipython>=8.0.0,<9.0.0
-jupyter>=1.0.0,<2.0.0
-notebook>=6.5.0,<7.0.0
+# Optional notebook tooling (install only outside Google Colab)
+ipython>=8.10.0
+jupyterlab>=4.0.0
