@@ -8,7 +8,13 @@ enabling second-order fine-tuning after first-order (ADAM) training.
 from typing import List, Tuple, Any
 import numpy as np
 import tensorflow as tf
-from scipy.optimize import minimize
+try:
+    from scipy.optimize import minimize
+    SCIPY_AVAILABLE = True
+except ImportError:  # pragma: no cover - optional dependency
+    minimize = None  # type: ignore
+    SCIPY_AVAILABLE = False
+
 from tqdm import tqdm
 
 try:
@@ -62,6 +68,10 @@ def lbfgs_optimizer_scipy(
         ...     max_iter=1000
         ... )
     """
+    if not SCIPY_AVAILABLE:
+        raise RuntimeError(
+            "lbfgs_optimizer_scipy requires SciPy. Install with: pip install scipy"
+        )
     # Get shapes and flatten initial weights
     shapes = [v.shape.as_list() for v in initial_weights]
     w0 = np.concatenate([v.numpy().flatten() for v in initial_weights]).astype(np.float64)
@@ -262,7 +272,7 @@ def lbfgs_optimizer_tfp(
             parallel_iterations=1,
         )
     except Exception as exc:  # pragma: no cover - fallback path
-        if not fallback_to_scipy:
+        if not fallback_to_scipy or not SCIPY_AVAILABLE:
             raise
         if verbose:
             print("TFP L-BFGS failed; falling back to scipy due to:", exc)
@@ -319,5 +329,6 @@ __all__ = [
     'lbfgs_optimizer_scipy',
     'lbfgs_optimizer_tfp',
     'check_tfp_availability',
-    'TFP_AVAILABLE'
+    'TFP_AVAILABLE',
+    'SCIPY_AVAILABLE'
 ]

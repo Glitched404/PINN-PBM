@@ -646,8 +646,11 @@ def run_case(
                 loss_fn=lambda: pinn.compute_data_loss(v_train_tf, t_train_tf, f_train_tf)
                 + pinn.compute_physics_loss(v_colloc_tf, t_colloc_tf),
                 initial_weights=pinn.get_trainable_variables(),
-                max_iter=config.lbfgs_iterations,
+                max_iter=config.lbfgs_max_iter,
+                tolerance=config.lbfgs_tolerance,
                 verbose=verbose,
+                fallback_to_scipy=False,
+                line_search_iterations=config.lbfgs_line_search_iterations,
             )
             lbfgs_used = "tfp"
         elif lbfgs in {"tfp", "scipy"} and SCIPY_AVAILABLE:
