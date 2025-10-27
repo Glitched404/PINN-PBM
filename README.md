@@ -69,6 +69,13 @@ print("tensorflow:", tf.__version__)
 print("tensorflow_probability:", tfp.__version__)
 
 %pip check
+
+from pinn_pbm.breakage.experiments import run_case
+
+result = run_case(case_type="case1", adam_epochs=1000, lbfgs="tfp")
+print("Adam duration (s) =", result["adam_duration_sec"])
+print("L-BFGS backend:", result["lbfgs_backend"], result["lbfgs"])
+
 ```
 
 Alternatively install the package directly with the Colab extra:
