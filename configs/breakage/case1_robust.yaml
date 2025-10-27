@@ -1,0 +1,37 @@
+# Robust training configuration for Breakage Case 1 (PRD Solution 6)
+problem_type: breakage
+case_name: case1_linear
+
+domain:
+  v_min: 0.001
+  v_max: 10.0
+  t_min: 0.0
+  t_max: 10.0
+
+network:
+  n_hidden_layers: 8
+  n_neurons: 128
+  activation: tanh
+  use_residual: true
+  residual_freq: 2
+  weight_regularization: 1.0e-6
+
+training:
+  adam_epochs: 5000
+  learning_rate: 1.0e-3
+  data_batch_size: 1024
+  phys_batch_size: 2048
+  loss_schedule: progressive   # maps to progressive_loss_weights
+  final_physics_weight: 100.0
+  rar_frequency: 500
+  rar_percentile: 95
+  rar_noise_fraction: 0.10
+
+lbfgs:
+  backend: tfp
+  max_iterations: 3000
+  tolerance: 1.0e-12
+
+visualization:
+  plot_frequency: 1000
+  save_intermediate: true

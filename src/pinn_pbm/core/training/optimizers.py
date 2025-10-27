@@ -135,9 +135,11 @@ def lbfgs_optimizer_tfp(
     model: tf.keras.Model,
     loss_fn: callable,
     initial_weights: List[tf.Variable],
-    max_iter: int = 1500,
-    tolerance: float = 1e-7,
-    verbose: bool = True
+    max_iter: int = 3000,
+    tolerance: float = 1e-12,
+    verbose: bool = True,
+    fallback_to_scipy: bool = True,
+    line_search_iterations: int = 50,
 ) -> Any:
     """L-BFGS optimizer using TensorFlow Probability.
     
@@ -247,17 +249,30 @@ def lbfgs_optimizer_tfp(
         print(f"\nStarting TFP L-BFGS with {len(w0)} parameters...")
     
     # Run L-BFGS optimization
-    results = tfp.optimizer.lbfgs_minimize(
-        value_and_gradients_function=value_and_gradients,
-        initial_position=w0,
-        max_iterations=max_iter,
-        tolerance=tolerance,
-        f_relative_tolerance=1e-9,
-        x_tolerance=1e-12,
-        initial_inverse_hessian_estimate=None,
-        max_line_search_iterations=30,
-        parallel_iterations=4
-    )
+    try:
+        results = tfp.optimizer.lbfgs_minimize(
+            value_and_gradients_function=value_and_gradients,
+            initial_position=w0,
+            max_iterations=max_iter,
+            tolerance=tolerance,
+            f_relative_tolerance=1e-12,
+            x_tolerance=1e-15,
+            initial_inverse_hessian_estimate=None,
+            max_line_search_iterations=line_search_iterations,
+            parallel_iterations=1,
+        )
+    except Exception as exc:  # pragma: no cover - fallback path
+        if not fallback_to_scipy:
+            raise
+        if verbose:
+            print("TFP L-BFGS failed; falling back to scipy due to:", exc)
+        return lbfgs_optimizer_scipy(
+            model=model,
+            loss_fn=loss_fn,
+            initial_weights=initial_weights,
+            max_iter=max_iter,
+            verbose=verbose,
+        )
     
     # Unpack and assign final weights
     final_vars = unpack(results.position)
@@ -271,6 +286,17 @@ def lbfgs_optimizer_tfp(
             f"Iterations={int(results.num_iterations.numpy())}"
         )
     
+    if not bool(results.converged.numpy()) and fallback_to_scipy and SCIPY_AVAILABLE:
+        if verbose:
+            print("TFP L-BFGS did not converge; retrying with scipy backend.")
+        return lbfgs_optimizer_scipy(
+            model=model,
+            loss_fn=loss_fn,
+            initial_weights=initial_weights,
+            max_iter=max_iter,
+            verbose=verbose,
+        )
+
     return results
 
 

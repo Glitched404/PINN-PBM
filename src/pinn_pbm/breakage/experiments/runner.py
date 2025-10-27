@@ -24,7 +24,9 @@ from tqdm.auto import tqdm
 
 from pinn_pbm.breakage.models import BreakagePINN
 from pinn_pbm.breakage.solutions import get_analytical_solution
-from pinn_pbm.core.utils import set_random_seed
+from pinn_pbm.core.training.optimizers import lbfgs_optimizer_tfp
+from pinn_pbm.core.training.schedulers import progressive_loss_weights
+from pinn_pbm.core.utils import TrainingLogger, set_random_seed
 
 try:
     import tensorflow_probability as tfp
@@ -65,6 +67,8 @@ class CaseConfig:
     rarity_interval: int
     loss_schedule: Literal["fixed", "dynamic", "custom"]
     adam_log_every: int = 100
+    rar_percentile: float = 95.0
+    rar_noise_fraction: float = 0.1
 
 
 def _build_case_config(case_type: str) -> CaseConfig:
@@ -77,13 +81,15 @@ def _build_case_config(case_type: str) -> CaseConfig:
             t_min=0.0,
             t_max=10.0,
             t_slices=(0.0, 2.0, 5.0, 10.0),
-            adam_epochs=3000,
-            lbfgs_iterations=2500,
-            phys_loss_weight=0.01,
-            learning_rate=5e-4,
-            rarity_interval=5000,
-            loss_schedule="dynamic",
-            adam_log_every=200,
+            adam_epochs=5000,
+            lbfgs_iterations=3000,
+            phys_loss_weight=100.0,
+            learning_rate=1e-3,
+            rarity_interval=500,
+            loss_schedule="progressive",
+            adam_log_every=250,
+            rar_percentile=95.0,
+            rar_noise_fraction=0.1,
         )
     if case == "case2":
         return CaseConfig(
@@ -93,13 +99,15 @@ def _build_case_config(case_type: str) -> CaseConfig:
             t_min=0.0,
             t_max=5.0,
             t_slices=(0.0, 1.0, 2.0, 5.0),
-            adam_epochs=3000,
+            adam_epochs=4000,
             lbfgs_iterations=3000,
-            phys_loss_weight=0.01,
-            learning_rate=1e-4,
-            rarity_interval=5000,
-            loss_schedule="dynamic",
-            adam_log_every=200,
+            phys_loss_weight=50.0,
+            learning_rate=5e-4,
+            rarity_interval=750,
+            loss_schedule="progressive",
+            adam_log_every=250,
+            rar_percentile=95.0,
+            rar_noise_fraction=0.1,
         )
     if case == "case3":
         return CaseConfig(
@@ -109,13 +117,15 @@ def _build_case_config(case_type: str) -> CaseConfig:
             t_min=0.0,
             t_max=1000.0,
             t_slices=(0.0, 200.0, 500.0, 1000.0),
-            adam_epochs=5000,
-            lbfgs_iterations=3000,
-            phys_loss_weight=0.01,
-            learning_rate=1e-4,
-            rarity_interval=5000,
-            loss_schedule="dynamic",
-            adam_log_every=250,
+            adam_epochs=6000,
+            lbfgs_iterations=3500,
+            phys_loss_weight=75.0,
+            learning_rate=5e-4,
+            rarity_interval=750,
+            loss_schedule="progressive",
+            adam_log_every=300,
+            rar_percentile=97.0,
+            rar_noise_fraction=0.12,
         )
     if case == "case4":
         return CaseConfig(
@@ -125,13 +135,15 @@ def _build_case_config(case_type: str) -> CaseConfig:
             t_min=0.0,
             t_max=2000.0,
             t_slices=(0.0, 500.0, 1000.0, 2000.0),
-            adam_epochs=5000,
-            lbfgs_iterations=3000,
-            phys_loss_weight=0.01,
-            learning_rate=1e-4,
-            rarity_interval=5000,
-            loss_schedule="dynamic",
-            adam_log_every=250,
+            adam_epochs=6500,
+            lbfgs_iterations=3500,
+            phys_loss_weight=75.0,
+            learning_rate=5e-4,
+            rarity_interval=750,
+            loss_schedule="fixed",
+            adam_log_every=300,
+            rar_percentile=97.0,
+            rar_noise_fraction=0.12,
         )
     raise ValueError(f"Unsupported case_type={case_type!r}")
 
@@ -242,9 +254,7 @@ def _run_adam_stage(
     rng = np.random.default_rng(seed)
     optimizer = tf.keras.optimizers.Adam(learning_rate=config.learning_rate)
 
-    history_total: list[float] = []
-    history_data: list[float] = []
-    history_phys: list[float] = []
+    logger = TrainingLogger()
 
     v_candidates_tf = tf.convert_to_tensor(v_candidates, tf.float32)
     t_candidates_tf = tf.convert_to_tensor(t_candidates, tf.float32)
@@ -256,20 +266,31 @@ def _run_adam_stage(
     progress = tqdm(range(config.adam_epochs), desc="Adam", disable=not verbose)
     for epoch in progress:
         if config.loss_schedule == "dynamic":
-            w_phys = _dynamic_phys_weight(epoch, config.adam_epochs, config.phys_loss_weight)
+            weights = _dynamic_phys_weight(epoch, config.adam_epochs, config.phys_loss_weight)
+            w_data = 1.0
+            w_phys = weights
         elif config.loss_schedule == "custom":
+            w_data = 1.0
             w_phys = _custom_phys_weight(epoch, config.adam_epochs)
-        else:
-            w_phys = config.phys_loss_weight
+        else:  # progressive
+            progressive = progressive_loss_weights(
+                epoch,
+                config.adam_epochs,
+                final_physics_weight=config.phys_loss_weight,
+            )
+            w_data = progressive["data"]
+            w_phys = progressive["physics"]
 
         if config.rarity_interval and epoch > 0 and epoch % config.rarity_interval == 0:
-            if refined_v.shape[0] < adam_batch_phys // 2:
-                refined_v, refined_t = _rar_refine_points(
-                    pinn,
+            if hasattr(pinn, "residual_adaptive_refinement"):
+                refined_v_np, refined_t_np = pinn.residual_adaptive_refinement(
                     v_candidates_tf,
                     t_candidates_tf,
-                    k=adam_batch_phys // 2,
+                    percentile=config.rar_percentile,
+                    noise_fraction=config.rar_noise_fraction,
                 )
+                refined_v = tf.convert_to_tensor(refined_v_np, dtype=tf.float32)
+                refined_t = tf.convert_to_tensor(refined_t_np, dtype=tf.float32)
 
         data_idx = rng.integers(0, v_train.shape[0], size=adam_batch_data)
         v_data = tf.constant(v_train[data_idx])
@@ -299,7 +320,7 @@ def _run_adam_stage(
             f_data=f_data,
             v_physics=v_phys,
             t_physics=t_phys,
-            w_data=tf.constant(1.0, dtype=tf.float32),
+            w_data=tf.constant(w_data, dtype=tf.float32),
             w_physics=tf.constant(w_phys, dtype=tf.float32),
             optimizer=optimizer,
         )
@@ -308,25 +329,19 @@ def _run_adam_stage(
         data_scalar = float(data_loss.numpy())
         phys_scalar = float(phys_loss.numpy())
 
-        history_total.append(total_scalar)
-        history_data.append(data_scalar)
-        history_phys.append(phys_scalar)
+        logger.log_epoch(epoch, total_scalar, phys_scalar, data_scalar)
 
         if verbose and (epoch + 1) % config.adam_log_every == 0:
             progress.set_postfix(
                 total=f"{total_scalar:.2e}",
                 data=f"{data_scalar:.2e}",
                 phys=f"{phys_scalar:.2e}",
-                w_phys=f"{w_phys:.3f}",
+                w_phys=f"{w_phys:.2e}",
             )
 
     progress.close()
 
-    return {
-        "total": np.array(history_total, dtype=np.float32),
-        "data": np.array(history_data, dtype=np.float32),
-        "phys": np.array(history_phys, dtype=np.float32),
-    }
+    return logger
 
 
 def _lbfgs_scipy(
@@ -576,15 +591,13 @@ def run_case(
         t_colloc_tf = tf.convert_to_tensor(t_colloc_lbfgs, tf.float32)
 
         if lbfgs == "tfp" and TFP_AVAILABLE:
-            lbfgs_summary = _lbfgs_tfp(
-                pinn,
-                v_train_tf,
-                t_train_tf,
-                f_train_tf,
-                v_colloc_tf,
-                t_colloc_tf,
-                config.lbfgs_iterations,
-                verbose,
+            lbfgs_summary = lbfgs_optimizer_tfp(
+                model=pinn.model,
+                loss_fn=lambda: pinn.compute_data_loss(v_train_tf, t_train_tf, f_train_tf)
+                + pinn.compute_physics_loss(v_colloc_tf, t_colloc_tf),
+                initial_weights=pinn.get_trainable_variables(),
+                max_iter=config.lbfgs_iterations,
+                verbose=verbose,
             )
             lbfgs_used = "tfp"
         elif lbfgs in {"tfp", "scipy"} and SCIPY_AVAILABLE:
@@ -612,15 +625,7 @@ def run_case(
 
     figures: Dict[str, plt.Figure] = {}
     if make_plots:
-        fig_loss, ax_loss = plt.subplots(figsize=(10, 6))
-        ax_loss.semilogy(adam_history["total"], label="Total loss")
-        ax_loss.semilogy(adam_history["data"], label="Data loss", linestyle="--")
-        ax_loss.semilogy(adam_history["phys"], label="Physics loss", linestyle=":")
-        ax_loss.set_xlabel("Epoch")
-        ax_loss.set_ylabel("Loss")
-        ax_loss.set_title(f"Adam history – {config.case_type}")
-        ax_loss.grid(True, which="both", ls="--", alpha=0.3)
-        ax_loss.legend()
+        fig_loss = adam_history.plot_losses()
         figures["loss"] = fig_loss
 
         fig_pred, axes = plt.subplots(2, 2, figsize=(14, 10))
@@ -645,15 +650,20 @@ def run_case(
 
     return {
         "config": config,
+        "pinn": pinn,
         "adam_history": adam_history,
-        "adam_duration_sec": adam_duration,
-        "lbfgs": lbfgs_summary,
-        "lbfgs_backend": lbfgs_used,
-        "predictions": f_pred,
-        "analytical": f_exact,
-        "relative_errors": rel_errors,
+        "relative_errors": rel_error_by_slice,
         "figures": figures,
+        "adam_duration_sec": adam_duration,
+        "lbfgs_backend": lbfgs_used,
+        "lbfgs": lbfgs_summary,
+        "losses": adam_history.to_dict() if hasattr(adam_history, "to_dict") else None,
+        "predictions": {
+            "v_grid": v_plot,
+            "t_grid": t_plot,
+            "f_pred": f_pred,
+            "f_exact": f_exact,
+        },
     }
-
 
 __all__ = ["run_case", "CaseConfig"]

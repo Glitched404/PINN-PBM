@@ -9,6 +9,7 @@ Includes:
 
 # Result management (Step 2 - Complete)
 from .result_manager import ResultManager
+from .training_logger import TrainingLogger
 
 # Config loader (Step 3 - Complete)
 from .config_loader import (
@@ -39,6 +40,7 @@ from .helper_functions import (
 
 __all__ = [
     'ResultManager',
+    'TrainingLogger',
     'load_config',
     'load_yaml',
     'validate_config',

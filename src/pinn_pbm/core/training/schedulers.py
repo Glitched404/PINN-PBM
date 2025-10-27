@@ -62,6 +62,36 @@ def get_dynamic_loss_weight(
         return final_weight
 
 
+def progressive_loss_weights(
+    epoch: int,
+    total_epochs: int,
+    phase1_fraction: float = 0.3,
+    phase2_fraction: float = 0.4,
+    final_physics_weight: float = 100.0,
+) -> dict:
+    """Compute progressive data/physics loss weights as described in the PRD.
+
+    Phase layout (fractions must sum to <= 1.0):
+    - Phase 1 (data-only): physics weight is 0
+    - Phase 2 (progressive ramp): physics weight increases to final_physics_weight
+    - Phase 3 (full physics): physics weight fixed at final_physics_weight
+
+    Returns a dictionary with ``data`` and ``physics`` weights.
+    """
+
+    phase1_end = int(total_epochs * phase1_fraction)
+    phase2_end = int(total_epochs * (phase1_fraction + phase2_fraction))
+
+    if epoch < phase1_end:
+        return {"data": 1.0, "physics": 0.0}
+
+    if epoch < phase2_end:
+        progress = (epoch - phase1_end) / max(phase2_end - phase1_end, 1)
+        return {"data": 1.0, "physics": progress * final_physics_weight}
+
+    return {"data": 1.0, "physics": final_physics_weight}
+
+
 def get_custom_dynamic_loss_weight(
     epoch: int,
     total_epochs: int,
@@ -284,6 +314,7 @@ def create_warmup_exponential_schedule(
 __all__ = [
     'get_dynamic_loss_weight',
     'get_custom_dynamic_loss_weight',
+    'progressive_loss_weights',
     'WarmupSchedule',
     'create_warmup_cosine_schedule',
     'create_warmup_exponential_schedule'

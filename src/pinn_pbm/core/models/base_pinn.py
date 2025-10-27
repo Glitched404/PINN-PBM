@@ -90,41 +90,34 @@ class BasePINN(ABC):
             >>> # Model ready for training
         """
         inputs = tf.keras.Input(shape=(input_dim,), dtype=tf.float32)
-        
-        # First hidden layer
-        x = tf.keras.layers.Dense(
-            self.n_neurons,
-            activation=self.activation,
-            kernel_initializer='glorot_normal',
-            kernel_regularizer=l2(self.weight_regularization)
-        )(inputs)
-        
-        # Additional hidden layers with optional residual connections
-        for i in range(self.n_hidden_layers - 1):
-            # Save residual connection every residual_freq layers
-            if self.use_residual and (i % self.residual_freq) == 0:
-                residual = x
-            
-            x_inner = tf.keras.layers.Dense(
+
+        initializer = tf.keras.initializers.HeNormal()
+        layers_cache = []
+
+        x = inputs
+        for idx in range(self.n_hidden_layers):
+            dense = tf.keras.layers.Dense(
                 self.n_neurons,
                 activation=self.activation,
-                kernel_initializer='glorot_normal',
+                kernel_initializer=initializer,
                 kernel_regularizer=l2(self.weight_regularization)
             )(x)
-            
-            # Apply residual connection
-            if self.use_residual and (i % self.residual_freq) != 0:
-                x = tf.keras.layers.Add()([x_inner, residual])
-            else:
-                x = x_inner
-        
-        # Output layer
+
+            if self.use_residual and idx >= 2 and (idx + 1) % self.residual_freq == 0:
+                prev_layer = layers_cache[-2]
+                if prev_layer.shape[-1] == dense.shape[-1]:
+                    dense = tf.keras.layers.Add()([dense, prev_layer])
+
+            layers_cache.append(dense)
+            x = dense
+
         outputs = tf.keras.layers.Dense(
             output_dim,
             activation=None,
+            kernel_initializer=initializer,
             kernel_regularizer=l2(self.weight_regularization)
         )(x)
-        
+
         return tf.keras.Model(inputs, outputs)
     
     @abstractmethod

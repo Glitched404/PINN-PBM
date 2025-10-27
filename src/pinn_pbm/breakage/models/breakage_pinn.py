@@ -17,6 +17,8 @@ from pinn_pbm.breakage.physics import get_selection_function, breakage_symmetric
 TFP_AVAILABLE = check_tensorflow_probability()
 if TFP_AVAILABLE:
     import tensorflow_probability as tfp
+else:
+    tfp = None  # type: ignore
 
 
 class BreakagePINN(BasePINN):
@@ -217,132 +219,44 @@ class BreakagePINN(BasePINN):
         v_colloc: tf.Tensor,
         t_colloc: tf.Tensor
     ) -> Tuple[tf.Tensor, tf.Tensor]:
-        """Compute PDE residuals at collocation points.
-        
-        Residual = ∂f/∂t - (Birth - Death)
-        
-        Args:
-            v_colloc: Collocation volumes [batch]
-            t_colloc: Collocation times [batch]
-            
-        Returns:
-            Tuple of (residuals [batch], f_predictions [batch])
-        """
+        """Compute PDE residuals at collocation points."""
+
         v_grid = self.v_grid_tf
         B = tf.shape(v_colloc)[0]
         N = tf.shape(v_grid)[0]
-        
-        # Compute time derivative of f
+
         with tf.GradientTape() as tape:
             tape.watch(t_colloc)
             f_colloc = self.net_f(v_colloc, t_colloc)
         df_dt = tape.gradient(f_colloc, t_colloc)
         df_dt = tf.where(tf.math.is_finite(df_dt), df_dt, tf.zeros_like(df_dt))
-        
-        # Death term: S(v) * f(v,t)
-        death = -self.selection_fn(v_colloc) * f_colloc
-        
-        # Birth term: integral over v' > v
-        # Create batch grid: [B, N]
+
+        death = self.selection_fn(v_colloc) * f_colloc
+
         t_grid_batch = tf.repeat(tf.expand_dims(t_colloc, 1), N, axis=1)
         v_grid_batch = tf.repeat(tf.expand_dims(v_grid, 0), B, axis=0)
-        
-        # Evaluate f on grid
+
         f_grid = self.net_f(
             tf.reshape(v_grid_batch, [-1]),
             tf.reshape(t_grid_batch, [-1])
         )
         f_grid = tf.reshape(f_grid, [B, N])
-        
-        # Integrand: β(v,v') * S(v') * f(v',t)
-        # For symmetric breakage: β = 2/v'
+
         s_grid = self.selection_fn(v_grid)
         g_grid = f_grid * (2.0 / v_grid) * s_grid
-        
-        # Tail integral: ∫_v^∞ g(v') dv'
+
         tail_integrals = tail_trapz(g_grid, v_grid)
-        
-        # Find appropriate tail integral for each collocation point
+
         idx = tf.searchsorted(v_grid, v_colloc, side='right')
         idx = tf.minimum(idx, N - 1)
         batch_ids = tf.range(B, dtype=idx.dtype)
         birth = tf.gather_nd(tail_integrals, tf.stack([batch_ids, idx], axis=1))
-        
-        # PDE residual
-        residual = df_dt - (birth + death)
-        
+
+        residual = df_dt - (birth - death)
+        residual = tf.where(tf.math.is_finite(residual), residual, tf.zeros_like(residual))
+
         return residual, f_colloc
-    
-    @tf.function
-    def compute_physics_loss(
-        self,
-        v_colloc: tf.Tensor,
-        t_colloc: tf.Tensor
-    ) -> tf.Tensor:
-        """Compute physics loss from PDE residuals.
-        
-        Applies adaptive weighting and optional robust loss functions.
-        
-        Args:
-            v_colloc: Collocation volumes
-            t_colloc: Collocation times
-            
-        Returns:
-            Scalar physics loss
-        """
-        residuals, f_pred = self.compute_pointwise_residuals(v_colloc, t_colloc)
-        
-        # Clip residuals to prevent explosion
-        residuals = tf.clip_by_value(residuals, -1e3, 1e3)
-        
-        # Apply loss scaling strategy
-        if self.loss_scaling == 'original':
-            # Original: 1/f² weighting
-            weights = 1.0 / (tf.square(f_pred) + 1e-6)
-            weights = tf.minimum(weights, 1e2)
-            loss = tf.reduce_mean(weights * tf.square(residuals))
-        
-        elif self.loss_scaling == 'huber':
-            # Huber loss with 1/f² weighting
-            weights = 1.0 / (tf.square(f_pred) + 1e-6)
-            weights = tf.minimum(weights, 1e2)
-            loss = tf.reduce_mean(weights * huber_loss(residuals, delta=0.1))
-        
-        elif self.loss_scaling == 'adaptive_epsilon':
-            # Adaptive epsilon based on batch statistics
-            if TFP_AVAILABLE:
-                f_sq = tf.square(f_pred)
-                median_f_sq = tfp.stats.percentile(f_sq, 50.0)
-                adaptive_eps = 0.01 * median_f_sq + 1e-10
-            else:
-                adaptive_eps = 1e-6
-            
-            weights = 1.0 / (tf.square(f_pred) + adaptive_eps)
-            weights = tf.minimum(weights, 1e2)
-            loss = tf.reduce_mean(weights * tf.square(residuals))
-        
-        elif self.loss_scaling == 'adaptive_huber':
-            # RECOMMENDED: Adaptive epsilon + Huber
-            if TFP_AVAILABLE:
-                f_sq = tf.square(f_pred)
-                median_f_sq = tfp.stats.percentile(f_sq, 50.0)
-                adaptive_eps = 0.01 * median_f_sq + 1e-10
-            else:
-                adaptive_eps = 1e-6
-            
-            weights = 1.0 / (tf.square(f_pred) + adaptive_eps)
-            weights = tf.minimum(weights, 50.0)
-            loss = tf.reduce_mean(weights * huber_loss(residuals, delta=0.1))
-        
-        else:
-            # Default to simple squared loss
-            loss = tf.reduce_mean(tf.square(residuals))
-        
-        # Clip loss to prevent instability
-        loss = tf.clip_by_value(loss, 0.0, 1e6)
-        return loss
-    
-    @tf.function
+
     def compute_data_loss(
         self,
         v_data: tf.Tensor,
@@ -372,7 +286,10 @@ class BreakagePINN(BasePINN):
         # Adaptive weighting
         if TFP_AVAILABLE:
             log_f_sq = tf.square(log_f_obs)
-            median_log_f_sq = tfp.stats.percentile(log_f_sq, 50.0)
+            if tfp is not None:
+                median_log_f_sq = tfp.stats.percentile(log_f_sq, 50.0)
+            else:
+                median_log_f_sq = tfp.experimental.stats.percentile(log_f_sq, 50.0)
             adaptive_eps = 0.01 * median_log_f_sq + 1e-8
             weights = 1.0 / (log_f_sq + adaptive_eps)
             weights = tf.minimum(weights, 50.0)

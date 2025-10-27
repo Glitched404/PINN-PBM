@@ -72,9 +72,20 @@ print("tensorflow_probability:", tfp.__version__)
 
 from pinn_pbm.breakage.experiments import run_case
 
-result = run_case(case_type="case1", adam_epochs=1000, lbfgs="tfp")
+result = run_case(
+    case_type="case1",   # "case1", "case2", "case3", "case4"
+    adam_epochs=None,     # override progressive defaults by passing an int
+    lbfgs="tfp",          # "tfp", "scipy", or "none"
+    seed=42,
+    make_plots=True,
+)
+
 print("Adam duration (s) =", result["adam_duration_sec"])
 print("L-BFGS backend:", result["lbfgs_backend"], result["lbfgs"])
+
+losses = result.get("losses")
+if losses:
+    print("Final total loss =", losses["total"][-1])
 
 ```
 
