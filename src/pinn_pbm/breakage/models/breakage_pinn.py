@@ -257,6 +257,16 @@ class BreakagePINN(BasePINN):
 
         return residual, f_colloc
 
+    def compute_physics_loss(
+        self,
+        v_physics: tf.Tensor,
+        t_physics: tf.Tensor,
+    ) -> tf.Tensor:
+        """Return mean-squared physics residual loss for given collocation points."""
+
+        residuals, _ = self.compute_pointwise_residuals(v_physics, t_physics)
+        return tf.reduce_mean(tf.square(residuals))
+
     def compute_data_loss(
         self,
         v_data: tf.Tensor,
