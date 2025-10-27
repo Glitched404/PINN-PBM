@@ -69,6 +69,10 @@ class CaseConfig:
     adam_log_every: int = 100
     rar_percentile: float = 95.0
     rar_noise_fraction: float = 0.1
+    lbfgs_max_iter: int = 1500
+    lbfgs_tolerance: float = 1e-12
+    lbfgs_line_search_iterations: int = 50
+    lbfgs_fallback_to_scipy: bool = False
 
 
 def _build_case_config(case_type: str) -> CaseConfig:
@@ -90,6 +94,9 @@ def _build_case_config(case_type: str) -> CaseConfig:
             adam_log_every=250,
             rar_percentile=95.0,
             rar_noise_fraction=0.1,
+            lbfgs_max_iter=3000,
+            lbfgs_tolerance=1e-12,
+            lbfgs_line_search_iterations=50,
         )
     if case == "case2":
         return CaseConfig(
@@ -108,6 +115,9 @@ def _build_case_config(case_type: str) -> CaseConfig:
             adam_log_every=250,
             rar_percentile=95.0,
             rar_noise_fraction=0.1,
+            lbfgs_max_iter=3000,
+            lbfgs_tolerance=1e-12,
+            lbfgs_line_search_iterations=50,
         )
     if case == "case3":
         return CaseConfig(
@@ -126,6 +136,9 @@ def _build_case_config(case_type: str) -> CaseConfig:
             adam_log_every=300,
             rar_percentile=97.0,
             rar_noise_fraction=0.12,
+            lbfgs_max_iter=3500,
+            lbfgs_tolerance=1e-12,
+            lbfgs_line_search_iterations=60,
         )
     if case == "case4":
         return CaseConfig(
@@ -144,6 +157,9 @@ def _build_case_config(case_type: str) -> CaseConfig:
             adam_log_every=300,
             rar_percentile=97.0,
             rar_noise_fraction=0.12,
+            lbfgs_max_iter=3500,
+            lbfgs_tolerance=1e-12,
+            lbfgs_line_search_iterations=60,
         )
     raise ValueError(f"Unsupported case_type={case_type!r}")
 
