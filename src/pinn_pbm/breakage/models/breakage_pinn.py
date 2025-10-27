@@ -92,10 +92,17 @@ class BreakagePINN(BasePINN):
         self.log_t_max_tensor = tf.constant(np.log(t_max), dtype=tf.float32)
         
         # Integration grid for birth term
+        # Build logarithmically spaced integration grid while avoiding overflow
         ratio = 2.0 ** (1.0 / 3.0)
-        self.v_grid_tf = tf.constant(
-            (v_min * ratio ** np.arange(n_v)).astype(np.float32)
+        max_steps = int(np.ceil(np.log(max(v_max / v_min, 1.0 + 1e-6)) / np.log(ratio))) + 1
+        n_v_eff = max_steps if n_v is None else max(2, min(int(n_v), max_steps))
+        v_grid = np.logspace(
+            np.log10(v_min),
+            np.log10(max(v_max, v_min * 1.01)),
+            num=n_v_eff,
+            dtype=np.float64,
         )
+        self.v_grid_tf = tf.constant(v_grid.astype(np.float32))
         
         # Build main model (predicts log(f))
         self.model = self.build_model(input_dim=2, output_dim=1)
@@ -222,50 +229,115 @@ class BreakagePINN(BasePINN):
         """Compute PDE residuals at collocation points."""
 
         v_grid = self.v_grid_tf
-        B = tf.shape(v_colloc)[0]
-        N = tf.shape(v_grid)[0]
+        total_points = tf.shape(v_colloc)[0]
 
-        with tf.GradientTape() as tape:
-            tape.watch(t_colloc)
-            f_colloc = self.net_f(v_colloc, t_colloc)
-        df_dt = tape.gradient(f_colloc, t_colloc)
-        df_dt = tf.where(tf.math.is_finite(df_dt), df_dt, tf.zeros_like(df_dt))
+        # Handle edge case with no collocation points
+        if tf.equal(total_points, 0):
+            empty = tf.zeros((0,), dtype=tf.float32)
+            return empty, empty
 
-        death = self.selection_fn(v_colloc) * f_colloc
+        batch_size = tf.minimum(total_points, 1000)
+        batch_size = tf.maximum(batch_size, 1)
 
-        t_grid_batch = tf.repeat(tf.expand_dims(t_colloc, 1), N, axis=1)
-        v_grid_batch = tf.repeat(tf.expand_dims(v_grid, 0), B, axis=0)
-
-        f_grid = self.net_f(
-            tf.reshape(v_grid_batch, [-1]),
-            tf.reshape(t_grid_batch, [-1])
+        n_batches = tf.cast(
+            tf.math.ceil(
+                tf.cast(total_points, tf.float32)
+                / tf.cast(batch_size, tf.float32)
+            ),
+            tf.int32,
         )
-        f_grid = tf.reshape(f_grid, [B, N])
 
-        s_grid = self.selection_fn(v_grid)
-        g_grid = f_grid * (2.0 / v_grid) * s_grid
+        residuals_ta = tf.TensorArray(tf.float32, size=n_batches)
+        f_ta = tf.TensorArray(tf.float32, size=n_batches)
 
-        tail_integrals = tail_trapz(g_grid, v_grid)
+        def body(i, res_arr, f_arr):
+            start_idx = i * batch_size
+            end_idx = tf.minimum(start_idx + batch_size, total_points)
 
-        idx = tf.searchsorted(v_grid, v_colloc, side='right')
-        idx = tf.minimum(idx, N - 1)
-        batch_ids = tf.range(B, dtype=idx.dtype)
-        birth = tf.gather_nd(tail_integrals, tf.stack([batch_ids, idx], axis=1))
+            v_batch = v_colloc[start_idx:end_idx]
+            t_batch = t_colloc[start_idx:end_idx]
 
-        residual = df_dt - (birth - death)
-        residual = tf.where(tf.math.is_finite(residual), residual, tf.zeros_like(residual))
+            with tf.GradientTape() as tape:
+                tape.watch(t_batch)
+                f_batch = self.net_f(v_batch, t_batch)
+            df_dt = tape.gradient(f_batch, t_batch)
+            df_dt = tf.where(tf.math.is_finite(df_dt), df_dt, tf.zeros_like(df_dt))
 
-        return residual, f_colloc
+            death = self.selection_fn(v_batch) * f_batch
+
+            B = tf.shape(v_batch)[0]
+            N = tf.shape(v_grid)[0]
+
+            t_grid = tf.tile(tf.expand_dims(t_batch, 1), [1, N])
+            v_grid_batch = tf.tile(tf.expand_dims(v_grid, 0), [B, 1])
+
+            f_grid = self.net_f(
+                tf.reshape(v_grid_batch, [-1]),
+                tf.reshape(t_grid, [-1])
+            )
+            f_grid = tf.reshape(f_grid, [B, N])
+
+            s_grid = self.selection_fn(v_grid)
+            g_grid = f_grid * (2.0 / v_grid) * s_grid
+            tail_integrals = tail_trapz(g_grid, v_grid)
+
+            idx = tf.searchsorted(v_grid, v_batch, side='right')
+            idx = tf.minimum(idx, N - 1)
+            batch_ids = tf.range(B, dtype=idx.dtype)
+            birth = tf.gather_nd(tail_integrals, tf.stack([batch_ids, idx], axis=1))
+
+            residual = df_dt - (birth - death)
+            residual = tf.where(tf.math.is_finite(residual), residual, tf.zeros_like(residual))
+
+            res_arr = res_arr.write(i, residual)
+            f_arr = f_arr.write(i, f_batch)
+            return i + 1, res_arr, f_arr
+
+        def cond(i, *_):
+            return i < n_batches
+
+        _, residuals_ta, f_ta = tf.while_loop(
+            cond,
+            body,
+            loop_vars=(tf.constant(0, tf.int32), residuals_ta, f_ta),
+            parallel_iterations=1,
+        )
+
+        residuals = residuals_ta.concat()
+        f_pred = f_ta.concat()
+
+        return residuals, f_pred
 
     def compute_physics_loss(
         self,
         v_physics: tf.Tensor,
         t_physics: tf.Tensor,
     ) -> tf.Tensor:
-        """Return mean-squared physics residual loss for given collocation points."""
+        """Compute physics loss with optimized adaptive scaling."""
 
-        residuals, _ = self.compute_pointwise_residuals(v_physics, t_physics)
-        return tf.reduce_mean(tf.square(residuals))
+        residuals, f_pred = self.compute_pointwise_residuals(v_physics, t_physics)
+        residuals = tf.clip_by_value(residuals, -1e3, 1e3)
+
+        if self.loss_scaling == "adaptive_huber":
+            f_sq = tf.square(f_pred)
+            f_sq_mean, _ = tf.nn.moments(f_sq, axes=[0])
+            adaptive_eps = 0.01 * f_sq_mean + 1e-10
+
+            weights = 1.0 / (f_sq + adaptive_eps)
+            weights = tf.minimum(weights, 50.0)
+            loss = tf.reduce_mean(weights * huber_loss(residuals, delta=0.1))
+        elif self.loss_scaling == "adaptive_epsilon":
+            f_sq = tf.square(f_pred)
+            f_sq_mean, _ = tf.nn.moments(f_sq, axes=[0])
+            adaptive_eps = 0.01 * f_sq_mean + 1e-10
+
+            weights = 1.0 / (f_sq + adaptive_eps)
+            weights = tf.minimum(weights, 100.0)
+            loss = tf.reduce_mean(weights * tf.square(residuals))
+        else:
+            loss = tf.reduce_mean(tf.square(residuals))
+
+        return tf.clip_by_value(loss, 0.0, 1e6)
 
     def compute_data_loss(
         self,
@@ -293,19 +365,14 @@ class BreakagePINN(BasePINN):
         log_f_pred = tf.clip_by_value(log_f_pred, -20.0, 20.0)
         log_f_obs = tf.clip_by_value(log_f_obs, -20.0, 20.0)
         
-        # Adaptive weighting
-        if TFP_AVAILABLE:
-            log_f_sq = tf.square(log_f_obs)
-            if tfp is not None:
-                median_log_f_sq = tfp.stats.percentile(log_f_sq, 50.0)
-            else:
-                median_log_f_sq = tfp.experimental.stats.percentile(log_f_sq, 50.0)
-            adaptive_eps = 0.01 * median_log_f_sq + 1e-8
-            weights = 1.0 / (log_f_sq + adaptive_eps)
-            weights = tf.minimum(weights, 50.0)
-        else:
-            weights = tf.ones_like(log_f_obs)
-        
+        # Optimized adaptive weighting without TFP percentile
+        log_f_sq = tf.square(log_f_obs)
+        mean_log_f_sq, _ = tf.nn.moments(log_f_sq, axes=[0])
+        adaptive_eps = 0.01 * mean_log_f_sq + 1e-8
+
+        weights = 1.0 / (log_f_sq + adaptive_eps)
+        weights = tf.minimum(weights, 50.0)
+
         return tf.reduce_mean(weights * tf.square(log_f_pred - log_f_obs))
     
     def predict(

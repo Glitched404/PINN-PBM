@@ -224,17 +224,46 @@ def _select_collocation_batch(
     return v_phys, t_phys
 
 
-def _rar_refine_points(
+def _residual_adaptive_refinement_optimized(
     pinn: BreakagePINN,
-    v_candidates: tf.Tensor,
-    t_candidates: tf.Tensor,
-    k: int,
-) -> Tuple[tf.Tensor, tf.Tensor]:
-    residuals, f_pred = pinn.compute_pointwise_residuals(v_candidates, t_candidates)
-    score = tf.square(residuals) / (tf.square(f_pred) + 1e-10)
-    score = tf.minimum(score, 1e6)
-    _, top_idx = tf.math.top_k(score, k=k)
-    return tf.gather(v_candidates, top_idx), tf.gather(t_candidates, top_idx)
+    v_candidates: np.ndarray,
+    t_candidates: np.ndarray,
+    *,
+    percentile: float,
+    max_new_points: int,
+    rng: np.random.Generator,
+    sample_size: int = 2000,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Sample-based RAR that limits residual evaluations for performance."""
+
+    total_points = len(v_candidates)
+    if total_points == 0:
+        return np.empty((0,), dtype=np.float32), np.empty((0,), dtype=np.float32)
+
+    n_sample = min(sample_size, total_points)
+    if n_sample == 0:
+        return np.empty((0,), dtype=np.float32), np.empty((0,), dtype=np.float32)
+
+    sample_idx = rng.choice(total_points, size=n_sample, replace=False)
+    v_sample = v_candidates[sample_idx].astype(np.float32)
+    t_sample = t_candidates[sample_idx].astype(np.float32)
+
+    residuals, _ = pinn.compute_pointwise_residuals(
+        tf.constant(v_sample, dtype=tf.float32),
+        tf.constant(t_sample, dtype=tf.float32),
+    )
+
+    res_abs = np.abs(residuals.numpy())
+    if res_abs.size == 0:
+        return np.empty((0,), dtype=np.float32), np.empty((0,), dtype=np.float32)
+
+    threshold = np.percentile(res_abs, percentile)
+    high_mask = res_abs >= threshold
+
+    high_v = v_sample[high_mask][:max_new_points].astype(np.float32)
+    high_t = t_sample[high_mask][:max_new_points].astype(np.float32)
+
+    return high_v, high_t
 
 
 def _run_adam_stage(
@@ -256,12 +285,16 @@ def _run_adam_stage(
 
     logger = TrainingLogger()
 
-    v_candidates_tf = tf.convert_to_tensor(v_candidates, tf.float32)
-    t_candidates_tf = tf.convert_to_tensor(t_candidates, tf.float32)
-    refined_v = tf.constant([], dtype=tf.float32)
-    refined_t = tf.constant([], dtype=tf.float32)
+    refined_v_np = np.empty((0,), dtype=np.float32)
+    refined_t_np = np.empty((0,), dtype=np.float32)
 
     t_min_eff = max(config.t_min + 1e-6, 1e-3 * config.t_max)
+
+    max_collocation_points = 8000
+    weight_cache_interval = 100
+    rar_interval_multiplier = 2 if config.rarity_interval else 1
+    cached_w_data = 1.0
+    cached_w_phys = config.phys_loss_weight if config.loss_schedule == "dynamic" else 1.0
 
     progress = tqdm(range(config.adam_epochs), desc="Adam", disable=not verbose)
     for epoch in progress:
@@ -273,24 +306,41 @@ def _run_adam_stage(
             w_data = 1.0
             w_phys = _custom_phys_weight(epoch, config.adam_epochs)
         else:  # progressive
-            progressive = progressive_loss_weights(
-                epoch,
-                config.adam_epochs,
-                final_physics_weight=config.phys_loss_weight,
-            )
-            w_data = progressive["data"]
-            w_phys = progressive["physics"]
-
-        if config.rarity_interval and epoch > 0 and epoch % config.rarity_interval == 0:
-            if hasattr(pinn, "residual_adaptive_refinement"):
-                refined_v_np, refined_t_np = pinn.residual_adaptive_refinement(
-                    v_candidates_tf,
-                    t_candidates_tf,
-                    percentile=config.rar_percentile,
-                    noise_fraction=config.rar_noise_fraction,
+            if epoch == 0 or epoch % weight_cache_interval == 0:
+                progressive = progressive_loss_weights(
+                    epoch,
+                    config.adam_epochs,
+                    final_physics_weight=config.phys_loss_weight,
                 )
-                refined_v = tf.convert_to_tensor(refined_v_np, dtype=tf.float32)
-                refined_t = tf.convert_to_tensor(refined_t_np, dtype=tf.float32)
+                cached_w_data = progressive["data"]
+                cached_w_phys = progressive["physics"]
+            w_data = cached_w_data
+            w_phys = cached_w_phys
+
+        refined_v_np = np.empty((0,), dtype=np.float32)
+        refined_t_np = np.empty((0,), dtype=np.float32)
+        if config.rarity_interval and epoch > 0:
+            rar_interval = config.rarity_interval * rar_interval_multiplier
+            if epoch % rar_interval == 0 and hasattr(pinn, "compute_pointwise_residuals"):
+                new_v, new_t = _residual_adaptive_refinement_optimized(
+                    pinn,
+                    v_candidates,
+                    t_candidates,
+                    percentile=config.rar_percentile,
+                    max_new_points=500,
+                    rng=rng,
+                )
+                if new_v.size:
+                    v_candidates = np.concatenate([v_candidates, new_v])
+                    t_candidates = np.concatenate([t_candidates, new_t])
+
+                    if len(v_candidates) > max_collocation_points:
+                        idx = rng.choice(len(v_candidates), max_collocation_points, replace=False)
+                        v_candidates = v_candidates[idx]
+                        t_candidates = t_candidates[idx]
+
+                    refined_v_np = new_v
+                    refined_t_np = new_t
 
         data_idx = rng.integers(0, v_train.shape[0], size=adam_batch_data)
         v_data = tf.constant(v_train[data_idx])
@@ -307,12 +357,12 @@ def _run_adam_stage(
             t_min_eff,
             config.t_max,
         )
-        v_phys = tf.constant(v_phys_rand)
-        t_phys = tf.constant(t_phys_rand)
+        if refined_v_np.size:
+            v_phys_rand = np.concatenate([v_phys_rand, refined_v_np])
+            t_phys_rand = np.concatenate([t_phys_rand, refined_t_np])
 
-        if refined_v.shape[0]:
-            v_phys = tf.concat([v_phys, refined_v], axis=0)
-            t_phys = tf.concat([t_phys, refined_t], axis=0)
+        v_phys = tf.constant(v_phys_rand, dtype=tf.float32)
+        t_phys = tf.constant(t_phys_rand, dtype=tf.float32)
 
         total, data_loss, phys_loss = pinn.train_step(
             v_data=v_data,
