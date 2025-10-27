@@ -394,6 +394,39 @@ class ResultManager:
         
         return metadata
     
+    def save_plot(
+        self,
+        fig,
+        filename: str,
+        dpi: int = 300,
+        **savefig_kwargs
+    ) -> str:
+        """Save a matplotlib figure to the plots directory.
+        
+        Args:
+            fig: Matplotlib figure object
+            filename: Name of the file (e.g., 'comparison.png', 'loss_history.png')
+            dpi: Resolution in dots per inch (default: 300)
+            **savefig_kwargs: Additional keyword arguments passed to fig.savefig()
+            
+        Returns:
+            Full path to saved plot file
+            
+        Example:
+            >>> fig, ax = plt.subplots()
+            >>> ax.plot(x, y)
+            >>> rm.save_plot(fig, 'comparison.png', dpi=150)
+            >>> plt.close(fig)
+        """
+        filepath = os.path.join(self.save_dir, "plots", filename)
+        
+        # Set default savefig kwargs if not provided
+        if 'bbox_inches' not in savefig_kwargs:
+            savefig_kwargs['bbox_inches'] = 'tight'
+        
+        fig.savefig(filepath, dpi=dpi, **savefig_kwargs)
+        return filepath
+    
     def get_plot_path(self, plot_name: str) -> str:
         """Get the full path for saving a plot.
         
