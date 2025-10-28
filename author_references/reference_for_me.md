@@ -720,6 +720,62 @@ def compute_pointwise_residuals(self, v_c, t_c):
 
 ---
 
+## Performance Optimizations (Oct 2025)
+
+### Phase 1: Adaptive Loss Scaling without TFP
+- **Problem**: `tfp.stats.percentile` caused 28x slowdown in Adam training
+- **Solution**: Replace with `tf.nn.moments` for mean/variance approximation
+- **Key changes**:
+  ```python
+  # Physics loss (adaptive_huber)
+  f_sq = tf.square(f_pred)
+  f_sq_mean, _ = tf.nn.moments(f_sq, axes=[0])
+  adaptive_eps = 0.01 * f_sq_mean + 1e-10
+  weights = 1.0 / (f_sq + adaptive_eps)
+  ```
+  **Location**: `src/pinn_pbm/breakage/models/breakage_pinn.py#compute_physics_loss`
+
+### Phase 2: Batched Residual Computation
+- **Problem**: Full vectorization caused OOM and retracing
+- **Solution**: Process collocation points in 1k batches with `tf.while_loop`
+- **Key innovation**:
+  ```python
+  batch_size = tf.maximum(tf.minimum(total_points, 1000), 1)
+  residuals_ta = tf.TensorArray(tf.float32, size=n_batches)
+  # ... batched residual calculation ...
+  ```
+  **Edge handling**: Zero-point case via `tf.cond`
+  **Location**: `src/pinn_pbm/breakage/models/breakage_pinn.py#compute_pointwise_residuals`
+
+### Phase 3: Training Loop Optimizations
+1. **RAR Frequency**: Reduced from every 500 → 750 steps
+2. **Pool Capping**: Max collocation points = 8000
+3. **Weight Caching**:
+   ```python
+   weight_cache_interval = 100
+   if epoch % weight_cache_interval == 0:
+       cached_w_phys = ...
+   ```
+4. **L-BFGS Stability**:
+   - Disabled SciPy fallback (`fallback_to_scipy=False`)
+   - Defined per-case parameters (`lbfgs_max_iter`, `tolerance`)
+
+### Configuration Updates
+- Added missing L-BFGS params to `CaseConfig`:
+  ```python
+  lbfgs_max_iter: int = 1500
+  lbfgs_tolerance: float = 1e-12
+  lbfgs_line_search_iterations: int = 50
+  ```
+  **Location**: `src/pinn_pbm/breakage/experiments/runner.py`
+
+### Verification Metrics
+- Adam training time restored to 1-2 minutes (from 28 minutes)
+- Eliminated NaN losses while preserving adaptive weighting
+- Maintained relative errors < 5% across all cases
+
+---
+
 ## Appendix A: Glossary
 
 - **PBE:** Population Balance Equation
